@@ -1,0 +1,201 @@
+<!-- File: templates/index_gta.html -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Matrix-Game 2.0 GTA Demo</title>
+    <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: #121212; color: #e0e0e0; display: flex; flex-direction: column; align-items: center; margin: 0; padding: 20px; }
+        #container { max-width: 800px; width: 100%; text-align: center; }
+        h1 { color: #fff; }
+        #streamContainer { position: relative; width: 640px; height: 352px; margin-top: 20px; background-color: #000; display: none; /* Initially hidden */ }
+        #videoStream { border: 2px solid #333; width: 100%; height: 100%; object-fit: cover; transition: border-color 0.2s ease-in-out; }
+        #loadingOverlay { position: absolute; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0, 0, 0, 0.5); color: white; display: flex; align-items: center; justify-content: center; font-size: 1.2em; backdrop-filter: blur(2px); display: none; /* Initially hidden */ }
+        #controls { margin-top: 20px; display: flex; gap: 10px; justify-content: center; align-items: center; background: #1e1e1e; padding: 15px; border-radius: 8px; }
+        #status { margin-top: 15px; font-style: italic; color: #888; height: 20px; }
+        button, input { font-size: 16px; padding: 10px; border-radius: 5px; border: none; }
+        button { background-color: #007bff; color: white; cursor: pointer; }
+        button:disabled { background-color: #555; cursor: not-allowed; }
+        
+        #dashboard { display: flex; justify-content: center; gap: 20px; margin-top: 20px; width: 100%; }
+        .info-panel { background: #1e1e1e; padding: 15px; border-radius: 8px; flex-basis: 300px; }
+
+        .key-display { display: inline-block; width: 50px; height: 50px; border: 2px solid #555; border-radius: 5px; text-align: center; line-height: 50px; font-size: 20px; margin: 5px; transition: all 0.1s ease; user-select: none;}
+        .key-display.active { background-color: #007bff; color: white; border-color: #007bff; transform: scale(1.1); }
+        
+        #actionQueueDisplay { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; min-height: 40px; margin-top: 10px; }
+        .queue-item { background-color: #444; padding: 5px 10px; border-radius: 4px; font-family: monospace; }
+        
+        .generating-flash { animation: flash-border 0.5s ease-out; }
+        #actionQueue{display: none}
+        @keyframes flash-border {
+            0% { border-color: #00ff00; }
+            100% { border-color: #333; }
+        }
+    </style>
+</head>
+<body>
+    <div id="container">
+        <h1>Matrix-Game 2.0 GTA Demo</h1>
+        <div id="controls">
+            <input type="file" id="imageUpload" accept="image/*">
+            <button id="startButton">Start Driving</button>
+        </div>
+        <div id="status">Upload an initial image and press Start.</div>
+        
+        <div id="streamContainer">
+            <img id="videoStream" src="" alt="Live video stream"/>
+            <div id="loadingOverlay">
+                <span>Waiting for first action...</span>
+            </div>
+        </div>
+
+        <div id="dashboard">
+            <div id="keyPanel" class="info-panel">
+                <h4>Live Keys</h4>
+                <div>
+                   <span id="key-W" class="key-display">W</span>
+                </div>
+                <div>
+                   <span id="key-A" class="key-display">A</span>
+                   <span id="key-S" class="key-display">S</span>
+                   <span id="key-D" class="key-display">D</span>
+                </div>
+            </div>
+            <div id="actionQueue" class="info-panel">
+                <h4>Action Queue</h4>
+                <div id="actionQueueDisplay">
+                    <!-- Queue items will be inserted here -->
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            const socket = io();
+
+            const imageUpload = document.getElementById('imageUpload');
+            const startButton = document.getElementById('startButton');
+            const streamContainer = document.getElementById('streamContainer');
+            const videoStream = document.getElementById('videoStream');
+            const loadingOverlay = document.getElementById('loadingOverlay');
+            const statusDiv = document.getElementById('status');
+            const actionQueueDisplay = document.getElementById('actionQueueDisplay');
+            
+            const keysPressed = { 'w': false, 'a': false, 's': false, 'd': false };
+            const keyDisplays = {
+                'w': document.getElementById('key-W'),
+                'a': document.getElementById('key-A'),
+                's': document.getElementById('key-S'),
+                'd': document.getElementById('key-D'),
+            };
+
+            let isRunning = false;
+            let keyEventTimer = null;
+            const KEY_DEBOUNCE_MS = 100;
+
+            // --- NEW: Show uploaded image preview ---
+            let uploadedImageSrc = null;
+            imageUpload.addEventListener('change', () => {
+                const file = imageUpload.files[0];
+                if (file) {
+                    const reader = new FileReader();
+                    reader.onload = (e) => {
+                        uploadedImageSrc = e.target.result;
+                        videoStream.src = uploadedImageSrc;
+                        streamContainer.style.display = 'block';
+                        loadingOverlay.style.display = 'none';
+                    };
+                    reader.readAsDataURL(file);
+                }
+            });
+
+            startButton.addEventListener('click', () => {
+                if (isRunning) return;
+                if (uploadedImageSrc) {
+                    statusDiv.textContent = 'Starting...';
+                    startButton.disabled = true;
+                    imageUpload.disabled = true;
+                    isRunning = true;
+                    loadingOverlay.style.display = 'flex'; // Show loading overlay
+                    socket.emit('start_inference', { image: uploadedImageSrc });
+                } else {
+                    alert('Please select an image first!');
+                }
+            });
+
+            socket.on('video_frame', (data) => {
+                // Hide loading overlay on first frame received
+                if (loadingOverlay.style.display !== 'none') {
+                    loadingOverlay.style.display = 'none';
+                }
+                videoStream.src = 'data:image/jpeg;base64,' + data.image;
+            });
+            
+            socket.on('new_chunk_start', () => {
+                videoStream.classList.add('generating-flash');
+            });
+            
+            videoStream.addEventListener('animationend', () => {
+                 videoStream.classList.remove('generating-flash');
+            });
+
+            socket.on('queue_update', (data) => {
+                actionQueueDisplay.innerHTML = '';
+                data.queue.forEach(action => {
+                    const item = document.createElement('div');
+                    item.className = 'queue-item';
+                    item.textContent = action;
+                    actionQueueDisplay.appendChild(item);
+                });
+            });
+
+            socket.on('update_status', (data) => {
+                statusDiv.textContent = data.status;
+                if (data.status.includes('Finished') || data.status.includes('Error')) {
+                    startButton.disabled = false;
+                    imageUpload.disabled = false;
+                    isRunning = false;
+                    loadingOverlay.style.display = 'none';
+                }
+            });
+
+            const sendKeyInput = () => {
+                if (isRunning) {
+                    socket.emit('key_input', { ...keysPressed });
+                }
+            };
+            
+            const handleKeyEvent = (key, isDown) => {
+                if (!isRunning || !keysPressed.hasOwnProperty(key)) return;
+                
+                if (keysPressed[key] !== isDown) {
+                    keysPressed[key] = isDown;
+                    updateKeyDisplay();
+
+                    clearTimeout(keyEventTimer);
+                    keyEventTimer = setTimeout(sendKeyInput, KEY_DEBOUNCE_MS);
+                }
+            };
+
+            document.addEventListener('keydown', (event) => {
+                if (event.repeat) return;
+                handleKeyEvent(event.key.toLowerCase(), true)
+            });
+            document.addEventListener('keyup', (event) => handleKeyEvent(event.key.toLowerCase(), false));
+
+            function updateKeyDisplay() {
+                for (const key in keyDisplays) {
+                    if (keysPressed[key]) {
+                        keyDisplays[key].classList.add('active');
+                    } else {
+                        keyDisplays[key].classList.remove('active');
+                    }
+                }
+            }
+        });
+    </script>
+</body>
+</html>
