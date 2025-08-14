@@ -28,7 +28,7 @@ from wan.vae.wanx_vae import get_wanx_vae_wrapper
 
 # --- Setup Flask App ---
 app = Flask(__name__)
-app.config['SECRET_KEY'] = 'secret-matrix-game'
+app.config['SECRET_KEY'] = 'secret-matrix-game' #hardcoded for localhost is probs fine, probably you want smth more robust if you are deploying it
 socketio = SocketIO(app, async_mode='threading')
 
 # --- Global State ---
